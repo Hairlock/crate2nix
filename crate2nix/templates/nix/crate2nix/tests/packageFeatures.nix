@@ -63,6 +63,47 @@ let
       ];
     };
 
+    "pkg_signer" = {
+      crateName = "signer";
+      dependencies = [
+        {
+          name = "curve";
+          packageId = "pkg_curve";
+          usesDefaultFeatures = false;
+        }
+        {
+          name = "zz";
+          packageId = "pkg_zz";
+          optional = true;
+          usesDefaultFeatures = false;
+        }
+      ];
+      features = {
+        "alloc" = [ "zz/alloc" ];
+        "zz" = [ "dep:zz" "curve/zz" ];
+      };
+    };
+    "pkg_curve" = {
+      crateName = "curve";
+      dependencies = [
+        {
+          name = "zz";
+          packageId = "pkg_zz";
+          optional = true;
+          usesDefaultFeatures = false;
+        }
+      ];
+      features = {
+        "zz" = [ "dep:zz" ];
+      };
+    };
+    "pkg_zz" = {
+      crateName = "zz";
+      features = {
+        "alloc" = [ ];
+      };
+    };
+
     "pkg_num_bigint" = {
       crateName = "num-bigint";
     };
@@ -109,6 +150,15 @@ in
       "pkg_numtest" = [ "default" ];
       "pkg_num" = [ "default" "num-bigint" "num-bigint/std" "std" ];
       "pkg_num_bigint" = [ "std" ];
+    };
+  };
+
+  testDependencyFeatureEnablesTheFeatureNamedLikeTheDependency = {
+    expr = packageFeatures "pkg_signer" [ "alloc" ];
+    expected = {
+      "pkg_signer" = [ "alloc" "curve/zz" "dep:zz" "zz" "zz/alloc" ];
+      "pkg_curve" = [ "dep:zz" "zz" ];
+      "pkg_zz" = [ "alloc" ];
     };
   };
 

@@ -584,8 +584,7 @@ rec {
       assert (builtins.isBool runTests);
       let
         crateConfig = crateConfigs."${packageId}" or (builtins.throw "Package not found: ${packageId}");
-        expandedFeatures = expandFeatures (crateConfig.features or { }) features;
-        enabledFeatures = enableFeatures (crateConfig.dependencies or [ ]) expandedFeatures;
+        enabledFeatures = resolveFeatures (crateConfig.features or { }) (crateConfig.dependencies or [ ]) features;
         depWithResolvedFeatures =
           dependency:
           let
@@ -716,6 +715,23 @@ rec {
         outFeatures = expandFeaturesNoCycle { } inputFeatures;
       in
       sortedUnique outFeatures;
+
+  /*
+    Returns the features of a crate given the requested ones: expanded by its
+    featureMap, plus the optional dependencies they enable, until neither adds
+    a feature, since an enabled optional dependency also turns on the crate's
+    feature of the same name.
+  */
+  resolveFeatures =
+    featureMap: dependencies: features:
+      assert (builtins.isAttrs featureMap);
+      assert (builtins.isList dependencies);
+      assert (builtins.isList features);
+      let
+        expanded = expandFeatures featureMap features;
+        enabled = enableFeatures dependencies expanded;
+      in
+      if enabled == expanded then enabled else resolveFeatures featureMap dependencies enabled;
 
   /*
     This function adds optional dependencies as features if they are enabled
