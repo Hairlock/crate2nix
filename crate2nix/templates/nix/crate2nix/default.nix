@@ -134,6 +134,13 @@ rec {
 
     testCrateFlags: list of flags to pass to the test exectuable
     testInputs: list of packages that should be available during test execution
+    testSrc: the source the harnesses are compiled from and run in, for a crate
+      whose own `src` does not hold its tests (null: the crate's `src`)
+    workspaceMember: the directory under the source the harnesses run in, as
+      cargo runs a package's tests with the package root as working directory
+      (null: the source's root)
+
+    The result's `passthru.testCrate` is the compiled harnesses.
   */
   crateWithTest =
     { crate
@@ -142,6 +149,8 @@ rec {
     , testInputs
     , testPreRun
     , testPostRun
+    , testSrc ? null
+    , workspaceMember ? null
     ,
     }:
       assert builtins.typeOf testCrateFlags == "list";
@@ -149,15 +158,23 @@ rec {
       assert builtins.typeOf testPreRun == "string";
       assert builtins.typeOf testPostRun == "string";
       let
+        testBuild = testCrate.override (_: {
+          buildTests = true;
+        });
+        drv =
+          if testSrc == null then
+            testBuild
+          else
+            testBuild.overrideAttrs (_: {
+              src = testSrc;
+            });
+
         # override the `crate` so that it will build and execute tests instead of
         # building the actual lib and bin targets We just have to pass `--test`
         # to rustc and it will do the right thing.  We execute the tests and copy
         # their log and the test executables to $out for later inspection.
         test =
           let
-            drv = testCrate.override (_: {
-              buildTests = true;
-            });
             # If the user hasn't set any pre/post commands, we don't want to
             # insert empty lines. This means that any existing users of crate2nix
             # don't get a spurious rebuild unless they set these explicitly.
@@ -172,7 +189,7 @@ rec {
           pkgs.stdenvNoCC.mkDerivation {
             name = "run-tests-${testCrate.name}";
 
-            inherit (crate) src;
+            src = if testSrc == null then crate.src else testSrc;
 
             inherit testCrateFlags;
 
@@ -181,6 +198,7 @@ rec {
             buildPhase = ''
               set -e
               export RUST_BACKTRACE=1
+              ${lib.optionalString (workspaceMember != null) ''cd "${workspaceMember}"''}
 
               # build outputs
               testRoot=target/debug
@@ -210,6 +228,7 @@ rec {
           inherit (crate) outputs crateName meta;
           passthru = (crate.passthru or { }) // {
             inherit test;
+            testCrate = drv;
           };
         }
         (
@@ -234,6 +253,9 @@ rec {
       testPreRun ? ""
     , # Any command run immediatelly after a test is executed.
       testPostRun ? ""
+    , # The source the test harnesses are compiled from and run in, for a crate
+      # whose own source does not hold its tests (null: the crate's source).
+      testSrc ? null
     ,
     }:
     lib.makeOverridable
@@ -245,6 +267,7 @@ rec {
         , testInputs
         , testPreRun
         , testPostRun
+        , testSrc
         ,
         }:
         let
@@ -273,6 +296,12 @@ rec {
           };
           drv = builtRustCrates.crates.${packageId};
           testDrv = builtTestRustCrates.crates.${packageId};
+          # The member directory the crate is compiled in, which a crate
+          # override may set: tests run there, as cargo runs them.
+          crateConfig = crates.${packageId};
+          workspaceMember =
+            (crateConfig // (crateOverrides.${crateConfig.crateName} or (_: { })) crateConfig).workspace_member
+              or null;
           derivation =
             if runTests then
               crateWithTest
@@ -284,6 +313,8 @@ rec {
                     testInputs
                     testPreRun
                     testPostRun
+                    testSrc
+                    workspaceMember
                     ;
                 }
             else
@@ -300,6 +331,7 @@ rec {
           testInputs
           testPreRun
           testPostRun
+          testSrc
           ;
       };
 

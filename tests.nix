@@ -278,6 +278,17 @@ let
     }
 
     {
+      name = "workspace_member_tests";
+      src = ./sample_projects/workspace_member_tests;
+      cargoToml = "Cargo.toml";
+      expectedTestOutputs = [
+        "test reads_a_fixture_relative_to_the_member ... ok"
+      ];
+      derivationAttrPath = [ "workspaceMembers" "workspace_member_tests" ];
+      customBuild = "sample_projects/workspace_member_tests/test.nix";
+    }
+
+    {
       name = "renamed_build_deps";
       src = ./sample_projects/renamed_build_deps;
       expectedOutput = "Hello, renamed_build_deps!";
