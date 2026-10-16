@@ -346,6 +346,9 @@ rec {
     , buildRustCrateForPkgsFunc
     , runTests
     , makeTarget ? makeDefaultTarget
+    , # The merged features of a whole workspace (`builtWorkspaceCratesWithFeatures`):
+      # used as they are, instead of resolving them from `packageId`.
+      mergedFeaturesOverride ? null
     ,
     }@args:
       assert (builtins.isAttrs crateConfigs);
@@ -355,15 +358,19 @@ rec {
       assert (builtins.isBool runTests);
       let
         rootPackageId = packageId;
-        mergedFeatures = mergePackageFeatures (
-          args
-          // {
-            inherit rootPackageId;
-            target = makeTarget stdenv.hostPlatform // {
-              test = runTests;
-            };
-          }
-        );
+        mergedFeatures =
+          if mergedFeaturesOverride != null then
+            mergedFeaturesOverride
+          else
+            mergePackageFeatures (
+              args
+              // {
+                inherit rootPackageId;
+                target = makeTarget stdenv.hostPlatform // {
+                  test = runTests;
+                };
+              }
+            );
         # Memoize built packages so that reappearing packages are only built once.
         builtByPackageIdByPkgs = mkBuiltByPackageIdByPkgs pkgs;
         mkBuiltByPackageIdByPkgs =
@@ -372,16 +379,22 @@ rec {
             self = {
               crates = lib.mapAttrs
                 (
-                  packageId: value: buildByPackageIdForPkgsImpl self pkgs packageId
+                  packageId: value:
+                  buildByPackageIdForPkgsImpl self pkgs packageId (runTests && packageId == rootPackageId)
+                    buildRustCrateForPkgsFunc
                 )
                 crateConfigs;
+              # A crate built with its devDependencies over the dependencies
+              # this graph already holds, by `buildFunc`.
+              testCrateOf =
+                packageId: buildFunc: buildByPackageIdForPkgsImpl self pkgs packageId true buildFunc;
               target = makeTarget pkgs.stdenv.hostPlatform;
               build = mkBuiltByPackageIdByPkgs pkgs.buildPackages;
             };
           in
           self;
         buildByPackageIdForPkgsImpl =
-          self: pkgs: packageId:
+          self: pkgs: packageId: withDevDependencies: buildFunc:
           let
             features = mergedFeatures."${packageId}" or [ ];
             crateConfig' = crateConfigs."${packageId}";
@@ -389,9 +402,7 @@ rec {
               "resolvedDefaultFeatures"
               "devDependencies"
             ];
-            devDependencies = lib.optionals (runTests && packageId == rootPackageId) (
-              crateConfig'.devDependencies or [ ]
-            );
+            devDependencies = lib.optionals withDevDependencies (crateConfig'.devDependencies or [ ]);
             dependencies = dependencyDerivations {
               inherit features;
               inherit (self) target;
@@ -447,7 +458,7 @@ rec {
               in
               lib.mapAttrs (name: builtins.map versionAndRename) grouped;
           in
-          buildRustCrateForPkgsFunc pkgs (
+          buildFunc pkgs (
             crateConfig
             // {
               src =
@@ -474,6 +485,65 @@ rec {
           );
       in
       builtByPackageIdByPkgs;
+
+  /*
+    One crate graph for a whole workspace, as `cargo test --workspace
+    --all-targets` builds it: the features of every root and of its
+    devDependencies are unified once, every crate is built once, and each root's
+    test crate is built over that graph, not over a graph of its own.
+
+    rootPackageIds: the workspace members
+    featuresByRoot: the features each root is built with
+    testBuildRustCrateForPkgsFuncByRoot: the `buildRustCrateForPkgsFunc` a root's
+      test crate is built with (default: `buildRustCrateForPkgsFunc`)
+
+    Returns `crates.<id>` (the libraries and binaries, one derivation per crate)
+    and `testCrates.<root>` (the root with its devDependencies, whose
+    harnesses `buildTests` compiles).
+  */
+  builtWorkspaceCratesWithFeatures =
+    { rootPackageIds
+    , featuresByRoot
+    , buildRustCrateForPkgsFunc
+    , testBuildRustCrateForPkgsFuncByRoot ? { }
+    , crateConfigs ? crates
+    , makeTarget ? makeDefaultTarget
+    ,
+    }:
+      assert (builtins.isList rootPackageIds);
+      assert (builtins.isAttrs featuresByRoot);
+      let
+        target = makeTarget stdenv.hostPlatform // {
+          test = true;
+        };
+        mergedFeatures = lib.foldl
+          (
+            featuresByPackageId: root:
+            mergePackageFeatures {
+              inherit crateConfigs target featuresByPackageId;
+              packageId = root;
+              rootPackageId = root;
+              features = featuresByRoot.${root};
+              runTests = true;
+            }
+          )
+          { }
+          rootPackageIds;
+        graph = builtRustCratesWithFeatures {
+          packageId = builtins.head rootPackageIds;
+          features = [ ];
+          inherit crateConfigs buildRustCrateForPkgsFunc makeTarget;
+          runTests = false;
+          mergedFeaturesOverride = mergedFeatures;
+        };
+      in
+      {
+        inherit (graph) crates;
+        testCrates = lib.genAttrs rootPackageIds (
+          root:
+          graph.testCrateOf root (testBuildRustCrateForPkgsFuncByRoot.${root} or buildRustCrateForPkgsFunc)
+        );
+      };
 
   # Returns the actual derivations for the given dependencies.
   dependencyDerivations =
